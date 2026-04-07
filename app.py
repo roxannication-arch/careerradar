@@ -101,7 +101,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <body>
 <div class="topbar">
   <div><h1>📡 Career Radar</h1><p>Разведка рынка труда США</p></div>
-  <div class="live"><div class="dot"></div>в сети</div>
+  <div style="display:flex;align-items:center;gap:12px;"><button onclick="refresh()" id="rbtn" style="padding:6px 14px;border-radius:8px;border:1px solid #ddd;background:white;font-size:0.78rem;color:#555;cursor:pointer;">🔄 Обновить</button><div class="live"><div class="dot"></div>в сети</div></div>
 </div>
 <div class="wrap">
   <div class="stats">
@@ -211,6 +211,16 @@ function gen(type){
 }
 function closeM(){document.getElementById('modal').classList.remove('open');}
 function copyT(){navigator.clipboard.writeText(document.getElementById('mtext').value);const b=document.querySelector('.bk');b.textContent='✓ Скопировано';setTimeout(()=>b.textContent='Скопировать',2000);}
+async function refresh(){
+  const btn=document.getElementById('rbtn');
+  btn.textContent='⏳ Загружаю...';btn.disabled=true;
+  try{
+    const r=await fetch('/api/refresh',{method:'POST'});
+    const d=await r.json();
+    btn.textContent='✅ '+d.message;
+    setTimeout(()=>{btn.textContent='🔄 Обновить';btn.disabled=false;location.reload();},2000);
+  }catch(e){btn.textContent='❌ Ошибка';btn.disabled=false;}
+}
 async function init(){
   const d=await fetch('/api/data').then(r=>r.json());
   all=d.articles;
@@ -286,6 +296,18 @@ def api_data():
         return jsonify({"articles":[dict(a) for a in articles],"insights":[dict(i) for i in insights]})
     finally:
         conn.close()
+
+@app.route('/api/refresh', methods=['POST'])
+def api_refresh():
+    try:
+        from collector import collect, init_db
+        from analyzer import analyze
+        init_db()
+        new_articles = collect()
+        new_insights = analyze()
+        return jsonify({"message": f"+{new_articles} статей, +{new_insights} инсайтов", "ok": True})
+    except Exception as e:
+        return jsonify({"message": f"Ошибка: {e}", "ok": False})
 
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
