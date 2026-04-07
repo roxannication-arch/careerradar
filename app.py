@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-import sqlite3
+import sqlite3, os
 from pathlib import Path
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 
 DB_PATH = Path(__file__).resolve().parent / "radar.db"
 app = Flask(__name__)
+
+ICON_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="115" fill="#f0f0eb"/>
+  <circle cx="256" cy="256" r="55" fill="none" stroke="#1a1a1a" stroke-width="20"/>
+  <circle cx="256" cy="256" r="110" fill="none" stroke="#1a1a1a" stroke-width="12" stroke-opacity="0.35"/>
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#1a1a1a" stroke-width="7" stroke-opacity="0.15"/>
+  <circle cx="256" cy="256" r="11" fill="#27ae60"/>
+  <line x1="256" y1="201" x2="256" y2="148" stroke="#27ae60" stroke-width="7" stroke-linecap="round"/>
+  <line x1="256" y1="201" x2="300" y2="232" stroke="#27ae60" stroke-width="5" stroke-linecap="round" stroke-opacity="0.6"/>
+</svg>'''
 
 HTML = r"""<!DOCTYPE html>
 <html lang="ru">
@@ -12,6 +22,10 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Career Radar">
+<link rel="apple-touch-icon" href="/icon">
+<link rel="icon" href="/icon" type="image/svg+xml">
 <title>Career Radar</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -29,8 +43,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .stat-label{font-size:0.68rem;color:#aaa;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;}
 .stat-val{font-size:2rem;font-weight:700;line-height:1;}
 .red{color:#c0392b;}.blue{color:#2471a3;}.purple{color:#7d3c98;}
-
-/* Паттерн дня */
 .pattern{background:white;border-radius:12px;border:1px solid #eee;padding:18px 20px;margin-bottom:20px;}
 .pattern-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
 .pattern-tag{font-size:0.68rem;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.07em;}
@@ -43,8 +55,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .btn:hover{background:#f5f5f5;}
 .btn.dark{background:#1a1a1a;color:white;border-color:#1a1a1a;}
 .btn.dark:hover{background:#333;}
-
-/* Грид */
 .grid{display:grid;grid-template-columns:1fr 300px;gap:16px;}
 @media(max-width:768px){.grid{grid-template-columns:1fr;}}
 .card{background:white;border-radius:12px;border:1px solid #eee;overflow:hidden;margin-bottom:16px;}
@@ -78,8 +88,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .tc{font-size:.72rem;color:#bbb;width:26px;text-align:right;}
 .more{display:block;width:100%;padding:10px;text-align:center;font-size:.8rem;color:#999;background:#fafafa;border:none;border-top:1px solid #f0f0f0;cursor:pointer;}
 .empty{padding:28px 16px;text-align:center;color:#bbb;font-size:.83rem;line-height:1.6;}
-
-/* Модалка */
 .mb{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center;}
 .mb.open{display:flex;}
 .mo{background:white;border-radius:16px;padding:24px;max-width:560px;width:90%;max-height:80vh;overflow-y:auto;}
@@ -102,7 +110,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="stat"><div class="stat-label">Стартапы</div><div class="stat-val blue" id="ss">—</div></div>
     <div class="stat"><div class="stat-label">Инсайтов</div><div class="stat-val purple" id="si">—</div></div>
   </div>
-
   <div class="pattern" id="pblock" style="display:none">
     <div class="pattern-top">
       <div class="pattern-tag">AI Insight · Паттерн дня</div>
@@ -112,12 +119,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="pattern-body" id="pbody"></div>
     <div class="pattern-vывод" id="pvyvod" style="display:none"></div>
     <div class="btns">
-      <button class="btn dark" onclick="gen('post')">✍️ Написать пост</button>
-      <button class="btn" onclick="gen('thread')">🧵 Написать тред</button>
+      <button class="btn dark" onclick="gen('post')">📱 Telegram-пост</button>
+      <button class="btn" onclick="gen('thread')">🧵 Threads-провокация</button>
       <button class="btn" onclick="gen('analysis')">📊 Полный анализ</button>
     </div>
   </div>
-
   <div class="grid">
     <div>
       <div class="card">
@@ -139,7 +145,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
   </div>
 </div>
-
 <div class="mb" id="modal" onclick="if(event.target===this)closeM()">
   <div class="mo">
     <h3 id="mtitle"></h3>
@@ -150,17 +155,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
   </div>
 </div>
-
 <script>
 const L={layoffs:'увольнения',hiring:'найм',hiring_freeze:'заморозка найма',startup:'стартапы',visa:'визы',remote_work:'удалёнка',tech:'технологии',ai_jobs:'AI & работа'};
 const B={layoffs:'b-layoffs',hiring:'b-hiring',hiring_freeze:'b-hiring_freeze',startup:'b-startup',visa:'b-visa',remote_work:'b-remote_work',tech:'b-tech',ai_jobs:'b-ai_jobs'};
 const C={layoffs:'#c0392b',hiring:'#27ae60',hiring_freeze:'#e67e22',startup:'#2471a3',visa:'#8e44ad',remote_work:'#888',tech:'#1565c0',ai_jobs:'#0e6655'};
 let all=[],f='all',n=30,ins='';
-
 function ta(d){if(!d)return'';const m=Math.floor((Date.now()-new Date(d))/60000);if(m<60)return m+' мин назад';if(m<1440)return Math.floor(m/60)+' ч назад';return Math.floor(m/1440)+' дн назад';}
 function bdg(c){return`<span class="badge ${B[c]||'b-tech'}">${L[c]||c}</span>`;}
 function mdToHtml(t){return t.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/## (.+)/g,'<strong>$1</strong>').replace(/\n\n/g,'<br><br>').replace(/\n/g,'<br>');}
-
 function rNews(){
   const fil=f==='all'?all:all.filter(a=>a.category===f);
   document.getElementById('nlist').innerHTML=fil.slice(0,n).map(a=>`<div class="ni">${bdg(a.category)}<div><div class="nt"><a href="${a.url}" target="_blank">${a.title}</a></div><div class="nm">${a.source} · ${ta(a.published_date)}</div></div></div>`).join('');
@@ -168,46 +170,38 @@ function rNews(){
 }
 function setF(c){f=c;n=30;document.querySelectorAll('.fbtn').forEach(b=>b.classList.toggle('on',b.dataset.cat===c));rNews();}
 function more(){n+=30;rNews();}
-
-function extractSection(text, heading) {
-  const re = new RegExp('##\\s*' + heading + '\\s*\\n([\\s\\S]*?)(?=##|$)');
-  const m = text.match(re);
-  return m ? m[1].trim() : '';
-}
-
+function extractSection(text,heading){const re=new RegExp('##\\s*'+heading+'\\s*\\n([\\s\\S]*?)(?=##|$)');const m=text.match(re);return m?m[1].trim():'';}
 function genFromIdea(idx){
   const idea=window['_idea_'+idx]||ins;
   document.getElementById('mtitle').textContent='📱 Пост для Telegram';
   document.getElementById('mtext').value='Генерирую...';
   document.getElementById('modal').classList.add('open');
-  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`Напиши пост для Telegram-канала на русском. Длина: 800-1200 символов. Цепляющий первый абзац → детали → вывод или вопрос. Без хэштегов. Тема — рынок труда США, аудитория — русскоязычные люди которые ищут работу в США.\n\nИдея: ${idea}`})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
+  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`Напиши пост для Telegram-канала на русском. Длина: 800-1200 символов. Цепляющий первый абзац → детали → вывод или вопрос. Без хэштегов. Тема — рынок труда США.\n\nИдея: ${idea}`})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
 }
 function genThreadFromIdea(idx){
   const idea=window['_idea_'+idx]||ins;
   document.getElementById('mtitle').textContent='🧵 Провокация для Threads';
   document.getElementById('mtext').value='Генерирую...';
   document.getElementById('modal').classList.add('open');
-  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`Напиши провокационный пост для Threads на русском. Один пост, до 500 символов. Острое мнение или неочевидный факт о рынке труда США. Без хэштегов. Только текст.\n\nИдея: ${idea}`})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
+  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`Напиши провокационный пост для Threads на русском. До 500 символов. Острое мнение о рынке труда США. Без хэштегов. Только текст.\n\nИдея: ${idea}`})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
 }
 function genIdea(){
   document.getElementById('mtitle').textContent='📱 Пост для Telegram';
   document.getElementById('mtext').value='Генерирую...';
   document.getElementById('modal').classList.add('open');
-  const prompt=`Напиши пост для Telegram-канала на русском. Длина: 800-1200 символов. Цепляющий первый абзац → детали → вывод или вопрос. Без хэштегов. Тема — рынок труда США, аудитория — русскоязычные люди которые ищут работу в США.\n\nИдея: ${window._idea||ins}`;
-  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
+  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`Напиши пост для Telegram на русском. Длина: 800-1200 символов. Цепляющий первый абзац → детали → вывод. Без хэштегов.\n\nИдея: ${window._idea||ins}`})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
 }
 function genIdeaThread(){
   document.getElementById('mtitle').textContent='🧵 Провокация для Threads';
   document.getElementById('mtext').value='Генерирую...';
   document.getElementById('modal').classList.add('open');
-  const prompt=`Напиши провокационный пост для Threads на русском. Один пост, до 500 символов. Острое мнение или неочевидный факт о рынке труда США. Без хэштегов. Только текст.\n\nИдея: ${window._idea||ins}`;
-  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
+  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:`Напиши провокационный пост для Threads на русском. До 500 символов. Острое мнение о рынке труда США. Без хэштегов. Только текст.\n\nИдея: ${window._idea||ins}`})}).then(r=>r.json()).then(d=>{document.getElementById('mtext').value=d.text||'Ошибка';});
 }
 function gen(type){
   const T={post:'📱 Пост для Telegram',thread:'🧵 Провокация для Threads',analysis:'📊 Полный анализ'};
   const P={
-    post:`Напиши пост для Telegram-канала на русском языке. Длина: 800-1200 символов. Структура: цепляющий первый абзац (факт или провокация) → развитие мысли с конкретными деталями → вывод или вопрос к аудитории. Без хэштегов. Тема — рынок труда США, аудитория — русскоязычные люди которые ищут работу в США или работают там.\n\n${ins}`,
-    thread:`Напиши провокационный пост для Threads на русском. Один пост, до 500 символов. Должен зацепить — острое мнение, неочевидный факт или спорное утверждение о рынке труда США. Никаких хэштегов. Никаких вводных слов типа "вот пост:". Только сам текст.\n\n${ins}`,
+    post:`Напиши пост для Telegram-канала на русском. Длина: 800-1200 символов. Цепляющий первый абзац → детали → вывод или вопрос. Без хэштегов. Тема — рынок труда США, аудитория — русскоязычные люди которые ищут работу в США.\n\n${ins}`,
+    thread:`Напиши провокационный пост для Threads на русском. До 500 символов. Острое мнение или неочевидный факт о рынке труда США. Без хэштегов. Только текст.\n\n${ins}`,
     analysis:`Сделай полный аналитический разбор на русском. Структура: ситуация → причины → последствия → что делать job seekers прямо сейчас.\n\n${ins}`
   };
   document.getElementById('mtitle').textContent=T[type];
@@ -217,7 +211,6 @@ function gen(type){
 }
 function closeM(){document.getElementById('modal').classList.remove('open');}
 function copyT(){navigator.clipboard.writeText(document.getElementById('mtext').value);const b=document.querySelector('.bk');b.textContent='✓ Скопировано';setTimeout(()=>b.textContent='Скопировать',2000);}
-
 async function init(){
   const d=await fetch('/api/data').then(r=>r.json());
   all=d.articles;
@@ -225,12 +218,10 @@ async function init(){
   document.getElementById('sl').textContent=all.filter(a=>a.category==='layoffs').length;
   document.getElementById('ss').textContent=all.filter(a=>a.category==='startup').length;
   document.getElementById('si').textContent=d.insights.length;
-
   const cats=[...new Set(all.map(a=>a.category))].sort();
   const fc=document.getElementById('filters');
   cats.forEach(c=>{const b=document.createElement('button');b.className='fbtn';b.dataset.cat=c;b.textContent=L[c]||c;b.onclick=()=>setF(c);fc.appendChild(b);});
   rNews();
-
   if(d.insights.length>0){
     ins=d.insights[0].content;
     const date=(d.insights[0].created_at||'').slice(0,10);
@@ -250,7 +241,6 @@ async function init(){
     }
     document.getElementById('pblock').style.display='block';
   }
-
   const il=document.getElementById('ilist');
   if(d.insights.length===0){il.innerHTML='<div class="empty">Нет инсайтов.<br>Запусти python3 analyzer.py</div>';}
   else{
@@ -259,15 +249,11 @@ async function init(){
       const ideaMatch=i.content.match(/##\s*Идея для контента\s*\n([\s\S]*?)(?=##|$)/);
       const idea=ideaMatch?ideaMatch[1].trim():'';
       const clean=mdToHtml(i.content);
-      const ideaBtns=idea?`<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="btn dark" style="font-size:.75rem;padding:5px 12px;" onclick="genFromIdea(${idx})">✍️ Пост</button>
-        <button class="btn" style="font-size:.75rem;padding:5px 12px;" onclick="genThreadFromIdea(${idx})">🧵 Тред</button>
-      </div>`:'';
+      const ideaBtns=idea?`<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;"><button class="btn dark" style="font-size:.75rem;padding:5px 12px;" onclick="genFromIdea(${idx})">📱 Пост</button><button class="btn" style="font-size:.75rem;padding:5px 12px;" onclick="genThreadFromIdea(${idx})">🧵 Тред</button></div>`:'';
       window['_idea_'+idx]=idea||i.content;
       return`<div class="ii"><div class="id">${date} · ${i.article_count} ст.</div><div class="ib">${clean}</div>${ideaBtns}</div>`;
     }).join('');
   }
-
   const counts={};all.forEach(a=>{counts[a.category]=(counts[a.category]||0)+1;});
   const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
   const mx=sorted[0]?.[1]||1;
@@ -278,7 +264,6 @@ init();
 </body>
 </html>"""
 
-
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -287,6 +272,10 @@ def get_db():
 @app.route('/')
 def index():
     return HTML
+
+@app.route('/icon')
+def icon():
+    return Response(ICON_SVG, mimetype='image/svg+xml')
 
 @app.route('/api/data')
 def api_data():
@@ -300,7 +289,6 @@ def api_data():
 
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
-    import os
     from dotenv import load_dotenv
     load_dotenv(DB_PATH.parent / ".env")
     try:
@@ -314,6 +302,6 @@ def api_generate():
 
 if __name__ == '__main__':
     print("🚀 Career Radar: http://localhost:5000")
-import os
+
 port = int(os.environ.get("PORT", 5000))
 app.run(host='0.0.0.0', port=port, debug=False)
