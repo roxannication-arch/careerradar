@@ -1,67 +1,67 @@
 #!/usr/bin/env python3
-"""
-Career Radar — News collector
-
-Fetches RSS feeds from multiple sources about US job market:
-layoffs, hiring, startups, visas, future of work.
-Stores each item in SQLite (radar.db) with deduplication by URL.
-"""
-
 from __future__ import annotations
-
-import sqlite3
-import re
-import urllib.request
-from datetime import datetime, timezone, timedelta
+import sqlite3, re, urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
-
-# Статьи старше этого количества дней не сохраняем
-MAX_AGE_DAYS = 30
-
-# Ключевые слова мусорных статей — пропускаем
-SKIP_KEYWORDS = [
-    "promo code", "best deals", "discount", "coupon", "best laptop",
-    "best phone", "best ipad", "best samsung", "best iphone", "gift guide",
-    "best garmin", "jump starter", "frame pro", "galaxy s2", "cases for",
-    "accessories", "the best ", "to buy", "vs ", "$300", "$200", "$100"
-]
-
 import feedparser
 
 DB_PATH = Path(__file__).resolve().parent / "radar.db"
+MAX_AGE_DAYS = 30
 
-# Browser-like headers so sites don't block us
+SKIP_KEYWORDS = [
+    # Шопинг и скидки
+    "promo code", "best deals", "discount", "coupon", "sale ", "% off",
+    "$300", "$200", "$100", "$50", "save money",
+    # Гаджеты и обзоры
+    "best laptop", "best phone", "best ipad", "best iphone", "best samsung",
+    "best garmin", "best gaming", "best headphone", "best tv", "best camera",
+    "best router", "best keyboard", "best monitor", "best speaker",
+    "galaxy s2", "iphone 1", "macbook", "cases for", "accessories for",
+    "jump starter", "frame pro", "air purifier", "coffee maker",
+    "the best ", "to buy in", "you can buy", "worth buying",
+    # Еда и лайфстайл  
+    "recipe", "how to cook", "french fry", "sugar babies", "workout",
+    "weight loss", "skin care", "hair care",
+    # Космос и наука (не релевантно карьере)
+    "artemis", "moon mission", "nasa budget cuts", "ice age", "dinosaur",
+    "probability dice", "native american",
+    # Спорт и развлечения
+    "game controller", "video game", "xbox", "playstation", "nintendo",
+    "nba ", "nfl ", "mlb ", "soccer", "football score",
+]
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
 
-# (feed_url, category, source_name)
 FEEDS: list[tuple[str, str, str]] = [
-    # Tech news
-    ("https://feeds.feedburner.com/TechCrunch", "tech", "TechCrunch"),
-    ("https://www.wired.com/feed/rss", "tech", "Wired"),
-    ("https://feeds.arstechnica.com/arstechnica/index", "tech", "Ars Technica"),
+    # Карьера и технологии — только релевантные разделы
+    ("https://techcrunch.com/category/startups/feed/", "startup", "TechCrunch"),
+    ("https://techcrunch.com/category/venture/feed/", "startup", "TechCrunch"),
 
-    # Layoffs & hiring - Google News RSS (most reliable source)
+    # Layoffs & hiring
     ("https://news.google.com/rss/search?q=layoffs+USA+2026&hl=en-US&gl=US&ceid=US:en", "layoffs", "Google News"),
     ("https://news.google.com/rss/search?q=tech+layoffs+2026&hl=en-US&gl=US&ceid=US:en", "layoffs", "Google News"),
-    ("https://news.google.com/rss/search?q=hiring+freeze+USA&hl=en-US&gl=US&ceid=US:en", "hiring_freeze", "Google News"),
+    ("https://news.google.com/rss/search?q=job+cuts+technology+2026&hl=en-US&gl=US&ceid=US:en", "layoffs", "Google News"),
+    ("https://news.google.com/rss/search?q=hiring+freeze+USA+2026&hl=en-US&gl=US&ceid=US:en", "hiring_freeze", "Google News"),
     ("https://news.google.com/rss/search?q=mass+layoffs+United+States&hl=en-US&gl=US&ceid=US:en", "layoffs", "Google News"),
+    ("https://news.google.com/rss/search?q=tech+hiring+2026&hl=en-US&gl=US&ceid=US:en", "hiring", "Google News"),
 
     # Startups & funding
     ("https://news.google.com/rss/search?q=startup+funding+USA+2026&hl=en-US&gl=US&ceid=US:en", "startup", "Google News"),
-    ("https://news.google.com/rss/search?q=new+startup+hiring+USA&hl=en-US&gl=US&ceid=US:en", "startup", "Google News"),
+    ("https://news.google.com/rss/search?q=venture+capital+2026+USA&hl=en-US&gl=US&ceid=US:en", "startup", "Google News"),
 
-    # Visas & immigration
+    # Visas
     ("https://news.google.com/rss/search?q=H1B+visa+2026&hl=en-US&gl=US&ceid=US:en", "visa", "Google News"),
-    ("https://news.google.com/rss/search?q=work+visa+USA&hl=en-US&gl=US&ceid=US:en", "visa", "Google News"),
-    ("https://news.google.com/rss/search?q=OPT+STEM+visa&hl=en-US&gl=US&ceid=US:en", "visa", "Google News"),
+    ("https://news.google.com/rss/search?q=work+visa+USA+immigration+2026&hl=en-US&gl=US&ceid=US:en", "visa", "Google News"),
+    ("https://news.google.com/rss/search?q=OPT+STEM+visa+2026&hl=en-US&gl=US&ceid=US:en", "visa", "Google News"),
 
     # Future of work
-    ("https://news.google.com/rss/search?q=remote+work+USA+2026&hl=en-US&gl=US&ceid=US:en", "remote_work", "Google News"),
-    ("https://news.google.com/rss/search?q=return+to+office+mandate&hl=en-US&gl=US&ceid=US:en", "remote_work", "Google News"),
-    ("https://news.google.com/rss/search?q=AI+jobs+future+work&hl=en-US&gl=US&ceid=US:en", "ai_jobs", "Google News"),
+    ("https://news.google.com/rss/search?q=remote+work+policy+2026&hl=en-US&gl=US&ceid=US:en", "remote_work", "Google News"),
+    ("https://news.google.com/rss/search?q=return+to+office+mandate+2026&hl=en-US&gl=US&ceid=US:en", "remote_work", "Google News"),
+    ("https://news.google.com/rss/search?q=AI+jobs+employment+2026&hl=en-US&gl=US&ceid=US:en", "ai_jobs", "Google News"),
+    ("https://news.google.com/rss/search?q=artificial+intelligence+workforce&hl=en-US&gl=US&ceid=US:en", "ai_jobs", "Google News"),
 ]
 
 
@@ -85,14 +85,12 @@ def init_db() -> None:
                 category TEXT,
                 is_analyzed INTEGER NOT NULL DEFAULT 0
             );
-
             CREATE TABLE IF NOT EXISTS insights (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 content TEXT NOT NULL,
                 article_count INTEGER NOT NULL DEFAULT 0
             );
-
             CREATE INDEX IF NOT EXISTS idx_articles_analyzed ON articles(is_analyzed);
             CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category);
         """)
@@ -102,7 +100,6 @@ def init_db() -> None:
 
 
 def fetch_feed(url: str) -> feedparser.FeedParserDict:
-    """Fetch RSS feed with browser-like headers to avoid blocks."""
     try:
         req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -132,7 +129,8 @@ def _summary_from_entry(entry) -> str:
                 val = val[0].get("value", "")
             text = str(val).strip()
             if "<" in text:
-                text = re.sub(r"<[^>]+>", " ", text)
+                import re as _re
+                text = _re.sub(r"<[^>]+>", " ", text)
             return text[:2000]
     return ""
 
@@ -140,34 +138,27 @@ def _summary_from_entry(entry) -> str:
 def collect() -> int:
     init_db()
     inserted = 0
+    skipped = 0
     conn = get_connection()
-
     try:
         for feed_url, category, source_name in FEEDS:
             print(f"Fetching: {source_name} / {category}...")
             parsed = fetch_feed(feed_url)
-
             if not parsed.entries:
                 print(f"  No entries found")
                 continue
-
             print(f"  Found {len(parsed.entries)} entries")
-
             for entry in parsed.entries:
                 link = getattr(entry, "link", None) or ""
                 title = (getattr(entry, "title", None) or "Untitled").strip()
                 if not link:
                     continue
-
-                # Пропускаем мусорные статьи
                 title_lower = title.lower()
                 if any(kw in title_lower for kw in SKIP_KEYWORDS):
+                    skipped += 1
                     continue
-
                 summary = _summary_from_entry(entry)
                 published = _parse_published(entry)
-
-                # Пропускаем статьи старше MAX_AGE_DAYS
                 if published:
                     try:
                         pub_dt = datetime.fromisoformat(published)
@@ -175,21 +166,18 @@ def collect() -> int:
                             continue
                     except (ValueError, TypeError):
                         pass
-
                 try:
                     conn.execute("""
-                        INSERT INTO articles
-                            (title, url, source, published_date, summary, category, is_analyzed)
+                        INSERT INTO articles (title, url, source, published_date, summary, category, is_analyzed)
                         VALUES (?, ?, ?, ?, ?, ?, 0)
                     """, (title, link, source_name, published, summary, category))
                     inserted += 1
                 except sqlite3.IntegrityError:
-                    pass  # duplicate URL, skip
-
+                    pass
         conn.commit()
     finally:
         conn.close()
-
+    print(f"  Skipped {skipped} junk articles")
     return inserted
 
 
